@@ -1,6 +1,6 @@
 {
-	"name": "biau2",
-	"version": "0.0.0",
+	"name": "@leonsilicon/biau2",
+	"version": "0.0.1",
 	"description": "Taiwan Ministry of Education word frequency table (詞頻總表, BIAU2) as JSON.",
 	"keywords": [
 		"chinese",

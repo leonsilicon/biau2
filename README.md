@@ -7,13 +7,13 @@ Source: the official `BIAU2.TXT` published by the ROC Ministry of Education — 
 ## Install
 
 ```bash
-npm install biau2
+npm install @leonsilicon/biau2
 ```
 
 ## Usage
 
 ```js
-import biau2 from "biau2";
+import biau2 from "@leonsilicon/biau2";
 
 biau2.metadata;
 // { source: "BIAU2.TXT", title: "詞頻總表", totalWords: 64327, totalFrequency: 530452 }
@@ -28,7 +28,7 @@ biau2.data[0];
 The raw JSON is also reachable directly:
 
 ```js
-import data from "biau2/biau2.json" with { type: "json" };
+import data from "@leonsilicon/biau2/biau2.json" with { type: "json" };
 ```
 
 ## Data shape
