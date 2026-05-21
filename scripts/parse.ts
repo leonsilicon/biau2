@@ -5,10 +5,9 @@
  * formatting directives. Each data page is bracketed by ╔…╗/╚…╝ borders and
  * contains rows of: 詞頻序號 │ 詞目 │ 出現頻次 │ 累積頻次 │ 累積百分比.
  *
- * Words may contain Big5 EUDC characters (lead byte 0xFA-0xFE) with no Unicode
- * mapping. To avoid silently dropping data, a word with any EUDC byte-pair is
- * emitted as an array of segments, each either a decoded string run or
- * `{ eudc: "<hex>" }` for the original Big5 byte pair (lowercase hex).
+ * Word cells are decoded with the WHATWG Big5 index table
+ * (data/index-big5.txt), which covers the HKSCS extension range 0xFA–0xFE
+ * that Node's built-in TextDecoder maps to PUA codepoints.
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -17,14 +16,12 @@ import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const INPUT = resolve(HERE, "../data/BIAU2.TXT");
+const INDEX = resolve(HERE, "../data/index-big5.txt");
 const OUTPUT = resolve(HERE, "../biau2.json");
-
-type EudcSegment = { eudc: string };
-type Word = string | Array<string | EudcSegment>;
 
 interface Entry {
 	rank: number;
-	word: Word;
+	word: string;
 	frequency: number;
 	cumulativeFrequency: number;
 	cumulativePercent: number;
@@ -37,6 +34,53 @@ interface Entry {
 
 const HEAVY_BAR = [0xf9, 0xf8] as const;
 const LIGHT_BAR = [0xa2, 0x78] as const;
+
+function loadBig5Index(path: string): Map<number, number> {
+	// WHATWG index-big5.txt: each non-comment line is "<pointer> 0x<codepoint> ..."
+	// pointer = (lead - 0x81) * 157 + (trail - (trail < 0x7F ? 0x40 : 0x62)).
+	const map = new Map<number, number>();
+	const text = readFileSync(path, "utf8");
+	for (const line of text.split("\n")) {
+		const m = line.match(/^\s*(\d+)\s+0x([0-9A-Fa-f]+)/);
+		if (!m) continue;
+		map.set(Number(m[1]), parseInt(m[2]!, 16));
+	}
+	return map;
+}
+
+const BIG5_INDEX = loadBig5Index(INDEX);
+
+function decodeBig5(bytes: Uint8Array): string {
+	// Pair-wise Big5 decoder following the WHATWG algorithm. ASCII bytes pass
+	// through; double-byte sequences are looked up in BIG5_INDEX, which extends
+	// vanilla Big5 with HKSCS mappings for the 0xFA–0xFE lead range.
+	let out = "";
+	for (let i = 0; i < bytes.length; i++) {
+		const lead = bytes[i]!;
+		if (lead < 0x80) {
+			out += String.fromCharCode(lead);
+			continue;
+		}
+		const trail = bytes[i + 1];
+		if (trail === undefined) throw new Error(`dangling Big5 lead 0x${lead.toString(16)}`);
+		const offset = trail < 0x7f ? 0x40 : 0x62;
+		if (trail < 0x40 || trail === 0x7f || trail > 0xfe) {
+			throw new Error(
+				`invalid Big5 pair ${lead.toString(16)} ${trail.toString(16)}`,
+			);
+		}
+		const pointer = (lead - 0x81) * 157 + (trail - offset);
+		const cp = BIG5_INDEX.get(pointer);
+		if (cp === undefined) {
+			throw new Error(
+				`unmapped Big5 pair ${lead.toString(16)}${trail.toString(16).padStart(2, "0")} (pointer ${pointer})`,
+			);
+		}
+		out += String.fromCodePoint(cp);
+		i++;
+	}
+	return out;
+}
 
 function findBytes(
 	buf: Uint8Array,
@@ -53,94 +97,12 @@ function findBytes(
 	return -1;
 }
 
-function hex2(n: number): string {
-	return n.toString(16).padStart(2, "0");
-}
-
 function trimSpaces(bytes: Uint8Array): Uint8Array {
 	let s = 0;
 	let e = bytes.length;
 	while (s < e && bytes[s] === 0x20) s++;
 	while (e > s && bytes[e - 1] === 0x20) e--;
 	return bytes.slice(s, e);
-}
-
-function decodeWord(bytes: Uint8Array): Word {
-	// Walk pair-by-pair. Big5 is a double-byte encoding; a lead byte in
-	// 0xFA-0xFE is the user-defined extension range (no Unicode mapping).
-	// Accumulate runs of normal pairs into Big5-decoded string segments and
-	// surface EUDC pairs as { eudc } so nothing is silently lost.
-	const trimmed = trimSpaces(bytes);
-	const segments: Array<string | EudcSegment> = [];
-	let runStart = 0;
-	const decoder = new TextDecoder("big5", { fatal: false });
-
-	const flushRun = (endExclusive: number) => {
-		if (endExclusive <= runStart) return;
-		const decoded = decoder.decode(trimmed.slice(runStart, endExclusive));
-		if (decoded.length > 0) segments.push(decoded);
-	};
-
-	let i = 0;
-	while (i < trimmed.length) {
-		const lead = trimmed[i]!;
-		if (lead >= 0xfa && lead <= 0xfe) {
-			flushRun(i);
-			const trail = trimmed[i + 1] ?? 0;
-			segments.push({ eudc: hex2(lead) + hex2(trail) });
-			i += 2;
-			runStart = i;
-			continue;
-		}
-		// Normal Big5 lead byte (0x81-0xF9). Trail byte is the following byte.
-		i += 2;
-	}
-	flushRun(trimmed.length);
-
-	// If TextDecoder hit unmappable sequences it inserts U+FFFD. Treat that as
-	// EUDC fallback by re-walking those pairs.
-	const hasReplacement = segments.some(
-		(s) => typeof s === "string" && s.includes("�"),
-	);
-	if (hasReplacement) {
-		const rebuilt: Array<string | EudcSegment> = [];
-		// Re-scan trimmed bytes, decoding each pair individually so we can pick
-		// out which specific pair failed.
-		let j = 0;
-		let runBuf = "";
-		while (j < trimmed.length) {
-			const lead = trimmed[j]!;
-			const trail = trimmed[j + 1] ?? 0;
-			if (lead >= 0xfa && lead <= 0xfe) {
-				if (runBuf) {
-					rebuilt.push(runBuf);
-					runBuf = "";
-				}
-				rebuilt.push({ eudc: hex2(lead) + hex2(trail) });
-			} else {
-				const ch = decoder.decode(trimmed.slice(j, j + 2));
-				if (ch.includes("�")) {
-					if (runBuf) {
-						rebuilt.push(runBuf);
-						runBuf = "";
-					}
-					rebuilt.push({ eudc: hex2(lead) + hex2(trail) });
-				} else {
-					runBuf += ch;
-				}
-			}
-			j += 2;
-		}
-		if (runBuf) rebuilt.push(runBuf);
-		segments.length = 0;
-		segments.push(...rebuilt);
-	}
-
-	if (segments.length === 0) return "";
-	if (segments.length === 1 && typeof segments[0] === "string") {
-		return segments[0];
-	}
-	return segments;
 }
 
 function splitRow(buf: Uint8Array, start: number, end: number): Uint8Array[] {
@@ -181,9 +143,6 @@ function parse(buf: Uint8Array): Entry[] {
 		// Use [open+2, close) so we don't pick up trailing whitespace after the
 		// closing ║.
 		const cells = splitRow(buf, open + HEAVY_BAR.length, close);
-		// A data row yields exactly 5 cells (rank, word, frequency, cumFreq,
-		// cumPct). Header/border rows yield different counts or non-numeric
-		// content and are filtered out.
 		if (cells.length !== 5) {
 			i = eol + 1;
 			continue;
@@ -197,7 +156,7 @@ function parse(buf: Uint8Array): Entry[] {
 
 		entries.push({
 			rank: Number(rankStr),
-			word: decodeWord(cells[1]!),
+			word: decodeBig5(trimSpaces(cells[1]!)),
 			frequency: Number(asciiTrim(cells[2]!)),
 			cumulativeFrequency: Number(asciiTrim(cells[3]!)),
 			cumulativePercent: Number(asciiTrim(cells[4]!)),
@@ -212,7 +171,6 @@ const buf = new Uint8Array(readFileSync(INPUT));
 const entries = parse(buf);
 
 const totalFrequency = entries.reduce((sum, e) => sum + e.frequency, 0);
-const eudcCount = entries.filter((e) => typeof e.word !== "string").length;
 
 const headers = [
 	"rank",
@@ -242,6 +200,5 @@ const json = {
 writeFileSync(OUTPUT, JSON.stringify(json) + "\n");
 
 console.log(
-	`Parsed ${entries.length} entries (total frequency ${totalFrequency}, ` +
-		`${eudcCount} rows with EUDC characters) → ${OUTPUT}`,
+	`Parsed ${entries.length} entries (total frequency ${totalFrequency}) → ${OUTPUT}`,
 );

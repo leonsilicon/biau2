@@ -35,17 +35,15 @@ import data from "@leonsilicon/biau2/biau2.json" with { type: "json" };
 
 Each row in `data` is an array matching `headers`:
 
-| index | field                 | type                                            | notes                                             |
-| ----- | --------------------- | ----------------------------------------------- | ------------------------------------------------- |
-| 0     | `rank`                | `number`                                        | rank as recorded in the source (1-based)          |
-| 1     | `word`                | `string \| Array<string \| { eudc: hex }>`      | see EUDC note below                               |
-| 2     | `frequency`           | `number`                                        | occurrences in the sample                         |
-| 3     | `cumulativeFrequency` | `number`                                        | running sum of `frequency`                        |
-| 4     | `cumulativePercent`   | `number`                                        | running cumulative coverage, as a percent (0–100) |
+| index | field                 | type     | notes                                             |
+| ----- | --------------------- | -------- | ------------------------------------------------- |
+| 0     | `rank`                | `number` | rank as recorded in the source (1-based)          |
+| 1     | `word`                | `string` |                                                   |
+| 2     | `frequency`           | `number` | occurrences in the sample                         |
+| 3     | `cumulativeFrequency` | `number` | running sum of `frequency`                        |
+| 4     | `cumulativePercent`   | `number` | running cumulative coverage, as a percent (0–100) |
 
-### EUDC characters
-
-A handful of rare characters in the source file use Big5 user-defined ranges (lead byte `0xFA`–`0xFE`) that have no Unicode mapping. When a word contains one or more such characters, it is emitted as an array of segments — each segment is either a decoded `string` run or `{ eudc: "<hex>" }` (the original Big5 byte pair, lowercase hex) — so no data is silently dropped. 31 of the 64,327 rows contain at least one such segment.
+Characters in the Big5 HKSCS extension range (`0xFA`–`0xFE`) are decoded via the WHATWG Big5 index table (`data/index-big5.txt`); some of them are CJK Extension B+ codepoints above U+FFFF (e.g. 𡭄, 𦲁).
 
 ## Regenerating the JSON
 
@@ -53,7 +51,7 @@ A handful of rare characters in the source file use Big5 user-defined ranges (le
 bun scripts/parse.ts
 ```
 
-Reads `data/BIAU2.TXT` and writes `biau2.json` at the repo root.
+Reads `data/BIAU2.TXT` (using `data/index-big5.txt` for Big5 decoding) and writes `biau2.json` at the repo root.
 
 ## License
 

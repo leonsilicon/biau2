@@ -1,9 +1,6 @@
-export type Biau2EudcSegment = { eudc: string };
-export type Biau2Word = string | Array<string | Biau2EudcSegment>;
-
 export type Biau2Row = [
 	rank: number,
-	word: Biau2Word,
+	word: string,
 	frequency: number,
 	cumulativeFrequency: number,
 	cumulativePercent: number,
